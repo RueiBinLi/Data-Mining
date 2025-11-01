@@ -102,7 +102,7 @@ def train_autoencoder(train_paths, epochs=30, batch_size=32, img_size=128):
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = AutoEncoder(latent_dim=128).to(device)
+    model = AutoEncoder(latent_dim=224).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     
@@ -257,8 +257,8 @@ def assign_to_clusters(kmeans, test_embeddings):
 
 def main():
     # Configuration
-    TRAIN_DIR = '/content/drive/MyDrive/Colab Notebooks/Data_Mining/Dataset/train'  # CHANGE THIS
-    TEST_DIR = '/content/drive/MyDrive/Colab Notebooks/Data_Mining/Dataset/test'    # CHANGE THIS
+    TRAIN_DIR = './Dataset/train'  # CHANGE THIS
+    TEST_DIR = './Dataset/test'    # CHANGE THIS
     IMG_SIZE = 224
     N_CLUSTERS = 20
     
