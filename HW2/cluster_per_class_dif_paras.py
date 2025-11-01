@@ -23,7 +23,7 @@ warnings.filterwarnings('ignore')
 
 class AutoEncoder(nn.Module):
     """Autoencoder for learning embeddings + reconstruction"""
-    def __init__(self, latent_dim=128):
+    def __init__(self, latent_dim=128, img_size=224):
         super().__init__()
         
         # Encoder - works for any image size
