@@ -26,33 +26,40 @@ class AutoEncoder(nn.Module):
     def __init__(self, latent_dim=128):
         super().__init__()
         
-        # Encoder
+        # Encoder - works for any image size
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=2, padding=1),  # 128 -> 64
+            nn.Conv2d(3, 32, 3, stride=2, padding=1),   # /2
             nn.ReLU(),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),  # 64 -> 32
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),  # /4
             nn.ReLU(),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1), # 32 -> 16
+            nn.Conv2d(64, 128, 3, stride=2, padding=1), # /8
             nn.ReLU(),
-            nn.Conv2d(128, 256, 3, stride=2, padding=1), # 16 -> 8
+            nn.Conv2d(128, 256, 3, stride=2, padding=1), # /16
+            nn.ReLU(),
+            nn.Conv2d(256, 256, 3, stride=2, padding=1), # /32
             nn.ReLU(),
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(256, latent_dim)
         )
         
+        # Calculate the size after downsampling
+        self.feature_size = img_size // 32  # After 5 stride-2 convs
+        
         # Decoder
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 256 * 8 * 8),
+            nn.Linear(latent_dim, 256 * self.feature_size * self.feature_size),
             nn.ReLU(),
-            nn.Unflatten(1, (256, 8, 8)),
-            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1), # 8 -> 16
+            nn.Unflatten(1, (256, self.feature_size, self.feature_size)),
+            nn.ConvTranspose2d(256, 256, 4, stride=2, padding=1), # *2
             nn.ReLU(),
-            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),  # 16 -> 32
+            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1), # *2
             nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),   # 32 -> 64
+            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),  # *2
             nn.ReLU(),
-            nn.ConvTranspose2d(32, 3, 4, stride=2, padding=1),    # 64 -> 128
+            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),   # *2
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 3, 4, stride=2, padding=1),    # *2
             nn.Sigmoid()
         )
     
