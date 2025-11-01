@@ -102,7 +102,7 @@ def train_autoencoder(train_paths, epochs=30, batch_size=32, img_size=128):
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = AutoEncoder(latent_dim=224).to(device)
+    model = AutoEncoder(latent_dim=128).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
     
@@ -139,7 +139,7 @@ def extract_embeddings(model, img_paths, batch_size=32, img_size=128):
     ])
     
     dataset = ImageDataset(img_paths, transform)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.eval()
