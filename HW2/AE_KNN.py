@@ -7,7 +7,7 @@ from torchvision import transforms
 from sklearn.svm import OneClassSVM
 from sklearn.metrics import roc_auc_score
 from PIL import Image
-from tqdm import tqdm
+from tqdm import tqdm  # <--- ADDED
 
 # ----------------------------
 # 1. Dataset
@@ -75,9 +75,11 @@ optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 # ----------------------------
 n_epochs = 100
 model.train()
+print(f"--- Starting Training on {device} ---") # <--- ADDED for clarity
 for epoch in range(n_epochs):
     total_loss = 0
-    for imgs in train_loader:
+    # <--- MODIFIED: Wrapped train_loader with tqdm ---
+    for imgs in tqdm(train_loader, desc=f"Epoch [{epoch+1}/{n_epochs}]", leave=False):
         imgs = imgs.to(device)
         optimizer.zero_grad()
         x_hat, _ = model(imgs)
@@ -86,16 +88,19 @@ for epoch in range(n_epochs):
         optimizer.step()
         total_loss += loss.item()
     print(f"Epoch [{epoch+1}/{n_epochs}] Loss: {total_loss/len(train_loader):.4f}")
+print("--- Training Finished ---")
 
 # ----------------------------
 # 4. Extract Latent Features
 # ----------------------------
-def extract_latents(dataloader):
+# <--- MODIFIED: Added 'desc' parameter for tqdm description ---
+def extract_latents(dataloader, desc="Extracting"): 
     model.eval()
     latents = []
     recon_losses = []
     with torch.no_grad():
-        for imgs in dataloader:
+        # <--- MODIFIED: Wrapped dataloader with tqdm ---
+        for imgs in tqdm(dataloader, desc=desc):
             imgs = imgs.to(device)
             x_hat, z = model(imgs)
             latents.append(z.cpu().numpy())
@@ -103,12 +108,14 @@ def extract_latents(dataloader):
             recon_losses.append(loss.cpu().numpy())
     return np.concatenate(latents), np.concatenate(recon_losses)
 
-train_latent, _ = extract_latents(train_loader)
-test_latent, test_recon = extract_latents(test_loader)
+# <--- MODIFIED: Added descriptions to calls ---
+train_latent, _ = extract_latents(train_loader, desc="Extracting Train Latents")
+test_latent, test_recon = extract_latents(test_loader, desc="Extracting Test Latents")
 
 # ----------------------------
 # 5. One-Class SVM on Latent
 # ----------------------------
+print("Fitting One-Class SVM...")
 scaler_mean = train_latent.mean(axis=0)
 scaler_std = train_latent.std(axis=0) + 1e-6
 train_latent = (train_latent - scaler_mean) / scaler_std
@@ -117,6 +124,7 @@ test_latent = (test_latent - scaler_mean) / scaler_std
 svm = OneClassSVM(kernel='rbf', gamma='scale', nu=0.05)
 svm.fit(train_latent)
 svm_scores = -svm.decision_function(test_latent)  # higher means more anomalous
+print("SVM fitting complete.")
 
 # ----------------------------
 # 6. Combine Scores (optional)
