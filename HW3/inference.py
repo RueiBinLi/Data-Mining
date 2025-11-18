@@ -19,7 +19,7 @@ MAX_HISTORY_LEN = 50
 EMBED_DIM = 128
 
 # --- 1. Re-define the Model Classes ---
-# (These must match your training script EXACTLY)
+# (Matches training script EXACTLY)
 
 class NewsEncoder(nn.Module):
     def __init__(self, vocab_size, cat_vocab_size, subcat_vocab_size, 
@@ -181,6 +181,8 @@ def main():
     
     # E. Prediction Loop
     print("Starting prediction...")
+    
+    # Initialize results list empty (CRITICAL FIX: No header row here)
     results = []
     
     # We process row by row (user by user)
@@ -202,17 +204,12 @@ def main():
                 padded_history[-L:] = history_ids[-L:]
             
             # 2. Parse Candidates (Impressions)
-            # Impressions in test might look like "N1234-0 N5678-0" or just "N1234 N5678"
-            # We split by space, then strip any "-0" or "-1" if present
             raw_impressions = row['impressions'].split()
             candidate_ids = [imp.split('-')[0] for imp in raw_impressions]
             
-            # According to specs, there should be 15 predictions.
-            # If there are fewer candidates, we predict for what exists.
             num_candidates = len(candidate_ids)
             
             # 3. Build Batch for this User
-            # We repeat the history 'num_candidates' times to create a batch
             
             # Get History Features (Single)
             h_titles, h_cats, h_subcats = [], [], []
@@ -254,18 +251,22 @@ def main():
                 if i < len(probs):
                     submission_row[col_name] = probs[i]
                 else:
-                    # Fallback if fewer than 15 candidates (though spec says 15)
+                    # Fallback if fewer than 15 candidates
                     submission_row[col_name] = 0.0 
             results.append(submission_row)
 
     # F. Write Submission CSV
     print(f"Writing submission to {SUBMISSION_PATH}...")
+    
+    # Create DataFrame from list of dicts
+    # Pandas automatically uses keys as column headers
     submission_df = pd.DataFrame(results)
     
-    # Ensure column order
+    # Ensure column order explicitly
     cols = ['id'] + [f'p{i+1}' for i in range(15)]
     submission_df = submission_df[cols]
     
+    # Write to CSV (index=False prevents writing the row index 0,1,2...)
     submission_df.to_csv(SUBMISSION_PATH, index=False)
     print("Done! Upload 'submission.csv' to Kaggle.")
 
