@@ -27,19 +27,35 @@ class NewsEncoder(nn.Module):
         super().__init__()
         self.word_embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
         self.title_reduce = nn.Linear(embed_dim, title_dim)
+        
         self.cat_embedding = nn.Embedding(cat_vocab_size, cat_dim, padding_idx=0)
         self.subcat_embedding = nn.Embedding(subcat_vocab_size, cat_dim, padding_idx=0)
+        
+        # --- UPDATED: Matches your trained model ---
+        self.layer_norm = nn.LayerNorm(embed_dim)
+        self.activation = nn.LeakyReLU(0.1)
+        # -------------------------------------------
+        
         self.final_layer = nn.Linear(title_dim + cat_dim + cat_dim, embed_dim)
-        self.relu = nn.ReLU()
 
     def forward(self, title, category, subcategory):
+        # Title
         title_embed = self.word_embedding(title)
         title_vec = torch.mean(title_embed, dim=1)
-        title_vec = self.relu(self.title_reduce(title_vec))
+        title_vec = self.activation(self.title_reduce(title_vec)) # Updated activation
+        
+        # Category & Subcategory
         cat_vec = self.cat_embedding(category)
         subcat_vec = self.subcat_embedding(subcategory)
+        
+        # Concatenate
         combined_vec = torch.cat([title_vec, cat_vec, subcat_vec], dim=1)
-        return self.relu(self.final_layer(combined_vec))
+        
+        # Final Projection with Norm
+        out = self.final_layer(combined_vec)
+        out = self.layer_norm(out)   # Updated
+        out = self.activation(out)   # Updated
+        return out
 
 class UserEncoder(nn.Module):
     def __init__(self, embed_dim):
@@ -143,6 +159,25 @@ def main():
         names=['id', 'user_id', 'time', 'clicked_news', 'impressions'],
         engine='python'
     )
+
+    print(f"DEBUG: Loaded {len(test_news_lookup)} news items in lookup.")
+
+    # Debug Check 2: Check a real sample match
+    first_row = behaviors_df.iloc[0]
+    sample_candidates = [imp.split('-')[0] for imp in first_row['impressions'].split()]
+    print(f"DEBUG: Sample candidates from behaviors: {sample_candidates}")
+
+    matches = 0
+    for cand in sample_candidates:
+        if cand in test_news_lookup:
+            matches += 1
+        else:
+            print(f"DEBUG: MISSING NEWS ID: {cand}")
+
+    print(f"DEBUG: Found {matches}/{len(sample_candidates)} candidates in lookup.")
+
+    if matches == 0:
+        print("CRITICAL ERROR: No news IDs match! Check your parsing logic.")
     
     # E. Prediction Loop
     print("Starting prediction...")
