@@ -160,6 +160,13 @@ def main():
         engine='python'
     )
 
+    # --- FIX START: Detect and Remove Header Row ---
+    # Check if the first row's ID matches the string "id"
+    if str(behaviors_df.iloc[0]['id']).strip().lower() == 'id':
+        print("WARNING: Header row detected in behaviors.tsv. Removing it.")
+        behaviors_df = behaviors_df.iloc[1:].reset_index(drop=True)
+    # --- FIX END ---
+
     print(f"DEBUG: Loaded {len(test_news_lookup)} news items in lookup.")
 
     # Debug Check 2: Check a real sample match
@@ -182,7 +189,6 @@ def main():
     # E. Prediction Loop
     print("Starting prediction...")
     
-    # Initialize results list empty (CRITICAL FIX: No header row here)
     results = []
     
     # We process row by row (user by user)
