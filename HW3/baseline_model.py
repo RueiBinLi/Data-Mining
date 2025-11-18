@@ -94,51 +94,46 @@ class AdditiveAttention(nn.Module):
 
 class NewsEncoder(nn.Module):
     """
-    Encodes a single news article into a vector.
-    Follows the "Baseline Approach" .
+    Improved NewsEncoder to prevent 'Dead ReLU' problem.
     """
     def __init__(self, vocab_size, cat_vocab_size, subcat_vocab_size, 
                  embed_dim=128, title_dim=32, cat_dim=32):
         super().__init__()
-        self.embed_dim = embed_dim
-        
-        # Word embeddings for title
         self.word_embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
-        # We will average the word embeddings, so we need a layer to reduce dim
         self.title_reduce = nn.Linear(embed_dim, title_dim)
         
-        # Category embeddings
         self.cat_embedding = nn.Embedding(cat_vocab_size, cat_dim, padding_idx=0)
-        
-        # Subcategory embeddings
         self.subcat_embedding = nn.Embedding(subcat_vocab_size, cat_dim, padding_idx=0)
         
-        # Final layer to combine features
-        total_dim = title_dim + cat_dim + cat_dim
-        self.final_layer = nn.Linear(total_dim, embed_dim)
-        self.relu = nn.ReLU()
+        # FIX: Add Layer Normalization
+        self.layer_norm = nn.LayerNorm(embed_dim)
+        
+        # FIX: Use LeakyReLU instead of ReLU
+        self.activation = nn.LeakyReLU(0.1) 
+        
+        self.final_layer = nn.Linear(title_dim + cat_dim + cat_dim, embed_dim)
 
     def forward(self, title, category, subcategory):
-        # title: [batch, max_title_len]
-        # category: [batch]
-        # subcategory: [batch]
+        # Title
+        title_embed = self.word_embedding(title) 
+        title_vec = torch.mean(title_embed, dim=1)
+        title_vec = self.activation(self.title_reduce(title_vec)) # LeakyReLU
         
-        # 1. Title: Embed words and take the mean
-        title_embed = self.word_embedding(title) # [batch, max_title_len, embed_dim]
-        title_vec = torch.mean(title_embed, dim=1) # [batch, embed_dim]
-        title_vec = self.relu(self.title_reduce(title_vec)) # [batch, title_dim]
+        # Category & Subcategory
+        cat_vec = self.cat_embedding(category)
+        subcat_vec = self.subcat_embedding(subcategory)
         
-        # 2. Category
-        cat_vec = self.cat_embedding(category) # [batch, cat_dim]
-        
-        # 3. Subcategory
-        subcat_vec = self.subcat_embedding(subcategory) # [batch, cat_dim]
-        
-        # 4. Concatenate and produce final embedding
+        # Concatenate
         combined_vec = torch.cat([title_vec, cat_vec, subcat_vec], dim=1)
-        news_embedding = self.relu(self.final_layer(combined_vec)) # [batch, embed_dim]
         
-        return news_embedding
+        # Final Projection
+        out = self.final_layer(combined_vec)
+        
+        # Apply Norm and Activation
+        out = self.layer_norm(out)
+        out = self.activation(out)
+        
+        return out
 
 class UserEncoder(nn.Module):
     """
@@ -166,6 +161,17 @@ class BaselineModel(nn.Module):
         super().__init__()
         self.news_encoder = NewsEncoder(vocab_size, cat_vocab_size, subcat_vocab_size, embed_dim)
         self.user_encoder = UserEncoder(embed_dim)
+        
+        # ADD THIS INITIALIZATION BLOCK
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
         
     def forward(self, hist_titles, hist_cats, hist_subcats, 
                 cand_title, cand_cat, cand_subcat):
@@ -205,7 +211,7 @@ class BaselineModel(nn.Module):
 
 # --- Hyperparameters ---
 BATCH_SIZE = 128
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0001
 EPOCHS = 3
 EMBED_DIM = 128 # The main dimension for news and user embeddings
 
