@@ -25,50 +25,59 @@ EMBED_DIM = 128
 
 def process_test_news(news_path, vocabs, max_title_len=30):
     """
-    Loads test news and maps words/categories to integers using the TRAINING vocab.
+    Loads test news using manual parsing to handle 'bad' lines with extra tabs.
     """
     print(f"Processing test news from {news_path}...")
-    # N.B. The test_news.tsv usually has no header or specific columns. 
-    # Ensure these column names match the file format specified in HW3 PDF[cite: 205].
-    news_df = pd.read_csv(
-        news_path, sep='\t', header=None,
-        names=['news_id', 'category', 'subcategory', 'title', 'abstract', 'url', 't_ent', 'a_ent'],
-        quoting=3 # QUOTE_NONE is often safer for these TSVs to avoid parsing errors
-    )
-    news_df['title'] = news_df['title'].fillna('')
     
     news_lookup = {}
     word_to_index = vocabs['word']
     cat_to_index = vocabs['category']
     subcat_to_index = vocabs['subcategory']
     
+    # Pre-fetch special indices
     unk_idx = word_to_index.get('UNK', 0)
     pad_cat = cat_to_index.get('PAD', 0)
     pad_subcat = subcat_to_index.get('PAD', 0)
 
-    for _, row in tqdm(news_df.iterrows(), total=len(news_df), desc="Indexing News"):
-        # Title Processing
-        title_tokens = str(row['title']).lower().split()
-        title_indices = [word_to_index.get(w, unk_idx) for w in title_tokens]
+    # Use standard python file reading (more robust than pandas for this)
+    with open(news_path, 'r', encoding='utf-8') as f:
+        for line in tqdm(f, desc="Indexing News"):
+            line = line.strip()
+            if not line: continue
+            
+            parts = line.split('\t')
+            
+            # We only strictly need the first 4 columns: ID, Cat, Subcat, Title
+            # Even if the Abstract (col 4) has tabs and splits into more parts, 
+            # the first 4 parts are usually safe.
+            if len(parts) >= 4:
+                news_id = parts[0]
+                category = parts[1]
+                subcategory = parts[2]
+                title_text = parts[3]
+                
+                # Title Processing
+                title_tokens = str(title_text).lower().split()
+                title_indices = [word_to_index.get(w, unk_idx) for w in title_tokens]
+                
+                padded_title = np.zeros(max_title_len, dtype=np.int32)
+                L = min(len(title_indices), max_title_len)
+                if L > 0:
+                    padded_title[:L] = title_indices[:L]
+                
+                news_lookup[news_id] = {
+                    'title': padded_title,
+                    'category': cat_to_index.get(category, pad_cat),
+                    'subcategory': subcat_to_index.get(subcategory, pad_subcat)
+                }
         
-        padded_title = np.zeros(max_title_len, dtype=np.int32)
-        L = min(len(title_indices), max_title_len)
-        if L > 0:
-            padded_title[:L] = title_indices[:L]
-        
-        # Store in lookup
-        news_lookup[row['news_id']] = {
-            'title': padded_title,
-            'category': cat_to_index.get(row['category'], pad_cat),
-            'subcategory': subcat_to_index.get(row['subcategory'], pad_subcat)
-        }
-        
-    # Add PAD entry for empty histories
+    # Ensure PAD exists
     news_lookup['PAD'] = {
         'title': np.zeros(max_title_len, dtype=np.int32),
         'category': pad_cat,
         'subcategory': pad_subcat
     }
+    
     return news_lookup
 
 def main():
