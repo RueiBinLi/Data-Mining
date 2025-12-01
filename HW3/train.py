@@ -11,7 +11,7 @@ from model import BaselineModel # Import from your new model file
 BATCH_SIZE = 64
 LEARNING_RATE = 0.0001 # Lower LR for stability
 EPOCHS = 5
-EMBED_DIM = 128
+EMBED_DIM = 256
 
 TRAIN_DATA_PATH = 'processed/train_data.pkl'
 NEWS_LOOKUP_PATH = 'processed/news_lookup.pkl'
