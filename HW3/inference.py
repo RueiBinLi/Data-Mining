@@ -21,7 +21,7 @@ SUBMISSION_PATH = 'submission.csv'
 # Must match train.py exactly
 MAX_TITLE_LEN = 30
 MAX_HISTORY_LEN = 50
-EMBED_DIM = 128
+EMBED_DIM = 256
 
 def process_test_news(news_path, vocabs, max_title_len=30):
     """
