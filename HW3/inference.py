@@ -5,96 +5,35 @@ import pickle
 import numpy as np
 from tqdm import tqdm
 import os
+import sys
+
+# --- CRITICAL FIX: Import the exact model class used in training ---
+# This ensures architecture and state_dict keys match perfectly.
+from model import BaselineModel 
 
 # --- Configuration ---
-TEST_NEWS_PATH = 'test/test_news.tsv'
+TEST_NEWS_PATH = 'test/test_news.tsv' # Make sure this path exists
 TEST_BEHAVIORS_PATH = 'test/test_behaviors.tsv'
 VOCAB_PATH = 'processed/vocabs.pkl'
 MODEL_PATH = 'baseline_model.pt'
 SUBMISSION_PATH = 'submission.csv'
 
-# Same constraints as training
+# Must match train.py exactly
 MAX_TITLE_LEN = 30
 MAX_HISTORY_LEN = 50
 EMBED_DIM = 128
 
-# --- 1. Re-define the Model Classes ---
-# (Matches training script EXACTLY)
-
-class NewsEncoder(nn.Module):
-    def __init__(self, vocab_size, cat_vocab_size, subcat_vocab_size, 
-                 embed_dim=128, title_dim=32, cat_dim=32):
-        super().__init__()
-        self.word_embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
-        self.title_reduce = nn.Linear(embed_dim, title_dim)
-        
-        self.cat_embedding = nn.Embedding(cat_vocab_size, cat_dim, padding_idx=0)
-        self.subcat_embedding = nn.Embedding(subcat_vocab_size, cat_dim, padding_idx=0)
-        
-        # --- UPDATED: Matches your trained model ---
-        self.layer_norm = nn.LayerNorm(embed_dim)
-        self.activation = nn.LeakyReLU(0.1)
-        # -------------------------------------------
-        
-        self.final_layer = nn.Linear(title_dim + cat_dim + cat_dim, embed_dim)
-
-    def forward(self, title, category, subcategory):
-        # Title
-        title_embed = self.word_embedding(title)
-        title_vec = torch.mean(title_embed, dim=1)
-        title_vec = self.activation(self.title_reduce(title_vec)) # Updated activation
-        
-        # Category & Subcategory
-        cat_vec = self.cat_embedding(category)
-        subcat_vec = self.subcat_embedding(subcategory)
-        
-        # Concatenate
-        combined_vec = torch.cat([title_vec, cat_vec, subcat_vec], dim=1)
-        
-        # Final Projection with Norm
-        out = self.final_layer(combined_vec)
-        out = self.layer_norm(out)   # Updated
-        out = self.activation(out)   # Updated
-        return out
-
-class UserEncoder(nn.Module):
-    def __init__(self, embed_dim):
-        super().__init__()
-    def forward(self, history_embeddings):
-        return torch.mean(history_embeddings, dim=1)
-
-class BaselineModel(nn.Module):
-    def __init__(self, vocab_size, cat_vocab_size, subcat_vocab_size, embed_dim=128):
-        super().__init__()
-        self.news_encoder = NewsEncoder(vocab_size, cat_vocab_size, subcat_vocab_size, embed_dim)
-        self.user_encoder = UserEncoder(embed_dim)
-        
-    def forward(self, hist_titles, hist_cats, hist_subcats, 
-                cand_title, cand_cat, cand_subcat):
-        cand_embedding = self.news_encoder(cand_title, cand_cat, cand_subcat)
-        
-        batch_size, history_len, title_len = hist_titles.shape
-        hist_titles_flat = hist_titles.view(batch_size * history_len, title_len)
-        hist_cats_flat = hist_cats.view(batch_size * history_len)
-        hist_subcats_flat = hist_subcats.view(batch_size * history_len)
-        
-        history_embeddings_flat = self.news_encoder(hist_titles_flat, hist_cats_flat, hist_subcats_flat)
-        history_embeddings = history_embeddings_flat.view(batch_size, history_len, -1)
-        
-        user_embedding = self.user_encoder(history_embeddings)
-        score = torch.sum(user_embedding * cand_embedding, dim=1)
-        return score
-
-# --- 2. Helper: Process Test News ---
 def process_test_news(news_path, vocabs, max_title_len=30):
     """
-    Loads test news and converts to indices using the TRAINING vocab.
-    Important: Does not add new words to vocab; uses UNK/PAD.
+    Loads test news and maps words/categories to integers using the TRAINING vocab.
     """
-    print("Processing test news...")
+    print(f"Processing test news from {news_path}...")
+    # N.B. The test_news.tsv usually has no header or specific columns. 
+    # Ensure these column names match the file format specified in HW3 PDF[cite: 205].
     news_df = pd.read_csv(
         news_path, sep='\t', header=None,
-        names=['news_id', 'category', 'subcategory', 'title', 'abstract', 'url', 't_ent', 'a_ent']
+        names=['news_id', 'category', 'subcategory', 'title', 'abstract', 'url', 't_ent', 'a_ent'],
+        quoting=3 # QUOTE_NONE is often safer for these TSVs to avoid parsing errors
     )
     news_df['title'] = news_df['title'].fillna('')
     
@@ -103,27 +42,28 @@ def process_test_news(news_path, vocabs, max_title_len=30):
     cat_to_index = vocabs['category']
     subcat_to_index = vocabs['subcategory']
     
-    # Pre-fetch special indices
-    unk_idx = word_to_index['UNK']
-    pad_cat = cat_to_index['PAD']
-    pad_subcat = subcat_to_index['PAD']
+    unk_idx = word_to_index.get('UNK', 0)
+    pad_cat = cat_to_index.get('PAD', 0)
+    pad_subcat = subcat_to_index.get('PAD', 0)
 
-    for _, row in tqdm(news_df.iterrows(), total=len(news_df)):
-        # Title
-        title_tokens = row['title'].lower().split()
+    for _, row in tqdm(news_df.iterrows(), total=len(news_df), desc="Indexing News"):
+        # Title Processing
+        title_tokens = str(row['title']).lower().split()
         title_indices = [word_to_index.get(w, unk_idx) for w in title_tokens]
         
         padded_title = np.zeros(max_title_len, dtype=np.int32)
         L = min(len(title_indices), max_title_len)
-        padded_title[:L] = title_indices[:L]
+        if L > 0:
+            padded_title[:L] = title_indices[:L]
         
+        # Store in lookup
         news_lookup[row['news_id']] = {
             'title': padded_title,
             'category': cat_to_index.get(row['category'], pad_cat),
             'subcategory': subcat_to_index.get(row['subcategory'], pad_subcat)
         }
         
-    # Ensure PAD exists
+    # Add PAD entry for empty histories
     news_lookup['PAD'] = {
         'title': np.zeros(max_title_len, dtype=np.int32),
         'category': pad_cat,
@@ -131,93 +71,80 @@ def process_test_news(news_path, vocabs, max_title_len=30):
     }
     return news_lookup
 
-# --- 3. Main Inference Function ---
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # A. Load Vocabs
+    # 1. Load Vocabs
     print(f"Loading vocabs from {VOCAB_PATH}...")
     with open(VOCAB_PATH, 'rb') as f:
         vocabs = pickle.load(f)
         
-    # B. Process Test News (using training vocabs)
+    # 2. Process Test News
     test_news_lookup = process_test_news(TEST_NEWS_PATH, vocabs, MAX_TITLE_LEN)
     
-    # C. Load Model
+    # 3. Load Model
     print(f"Loading model from {MODEL_PATH}...")
+    # Initialize the model structure FIRST
     model = BaselineModel(
-        len(vocabs['word']), len(vocabs['category']), len(vocabs['subcategory']), EMBED_DIM
+        len(vocabs['word']), 
+        len(vocabs['category']), 
+        len(vocabs['subcategory']), 
+        EMBED_DIM
     ).to(device)
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-    model.eval() # Important: Set to eval mode!
+    
+    # Load weights
+    try:
+        model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+    except RuntimeError as e:
+        print("\n!!! ERROR LOADING WEIGHTS !!!")
+        print("This usually happens if the architecture in model.py doesn't match the saved file.")
+        print(e)
+        return
 
-    # D. Load Test Behaviors
-    print(f"Loading test behaviors from {TEST_BEHAVIORS_PATH}...")
+    model.eval() # CRITICAL: Disables dropout/batchnorm updates
+
+    # 4. Load Behaviors
+    print(f"Loading behaviors from {TEST_BEHAVIORS_PATH}...")
     behaviors_df = pd.read_csv(
         TEST_BEHAVIORS_PATH, sep='\t', header=None,
         names=['id', 'user_id', 'time', 'clicked_news', 'impressions'],
         engine='python'
     )
-
-    # --- FIX START: Detect and Remove Header Row ---
-    # Check if the first row's ID matches the string "id"
+    
+    # Handle Header Row if present
     if str(behaviors_df.iloc[0]['id']).strip().lower() == 'id':
-        print("WARNING: Header row detected in behaviors.tsv. Removing it.")
         behaviors_df = behaviors_df.iloc[1:].reset_index(drop=True)
-    # --- FIX END ---
 
-    print(f"DEBUG: Loaded {len(test_news_lookup)} news items in lookup.")
-
-    # Debug Check 2: Check a real sample match
-    first_row = behaviors_df.iloc[0]
-    sample_candidates = [imp.split('-')[0] for imp in first_row['impressions'].split()]
-    print(f"DEBUG: Sample candidates from behaviors: {sample_candidates}")
-
-    matches = 0
-    for cand in sample_candidates:
-        if cand in test_news_lookup:
-            matches += 1
-        else:
-            print(f"DEBUG: MISSING NEWS ID: {cand}")
-
-    print(f"DEBUG: Found {matches}/{len(sample_candidates)} candidates in lookup.")
-
-    if matches == 0:
-        print("CRITICAL ERROR: No news IDs match! Check your parsing logic.")
-    
-    # E. Prediction Loop
-    print("Starting prediction...")
-    
     results = []
     
-    # We process row by row (user by user)
+    print("Starting Inference...")
     with torch.no_grad():
-        for idx, row in tqdm(behaviors_df.iterrows(), total=len(behaviors_df)):
+        for _, row in tqdm(behaviors_df.iterrows(), total=len(behaviors_df), desc="Predicting"):
             impression_id = row['id']
             
-            # 1. Parse History
-            history_ids = row['clicked_news']
-            if pd.isna(history_ids):
-                history_ids = []
-            else:
-                history_ids = history_ids.split()
-            
-            # Pad history
+            # --- Parse History ---
+            history_ids = str(row['clicked_news']).split()
+            # Pad/Truncate History
             padded_history = ['PAD'] * MAX_HISTORY_LEN
             L = min(len(history_ids), MAX_HISTORY_LEN)
             if L > 0:
-                padded_history[-L:] = history_ids[-L:]
+                padded_history[-L:] = history_ids[-L:] # Keep most recent interactions
             
-            # 2. Parse Candidates (Impressions)
-            raw_impressions = row['impressions'].split()
+            # --- Parse Candidates ---
+            # Impressions format: "NewsID-Label NewsID-Label" (if labeled) or "NewsID NewsID"
+            # We only need the NewsID.
+            raw_impressions = str(row['impressions']).split()
             candidate_ids = [imp.split('-')[0] for imp in raw_impressions]
-            
             num_candidates = len(candidate_ids)
             
-            # 3. Build Batch for this User
+            if num_candidates == 0:
+                results.append({'id': impression_id, **{f'p{i+1}': 0.0 for i in range(15)}})
+                continue
+
+            # --- Prepare Batch Data ---
             
-            # Get History Features (Single)
+            # 1. Fetch History Features (List of Arrays)
             h_titles, h_cats, h_subcats = [], [], []
             for nid in padded_history:
                 d = test_news_lookup.get(nid, test_news_lookup['PAD'])
@@ -225,12 +152,15 @@ def main():
                 h_cats.append(d['category'])
                 h_subcats.append(d['subcategory'])
             
-            # Replicate for batch
+            # 2. Replicate History for each Candidate
+            # We want to score [User, Candidate_1], [User, Candidate_2]...
+            # So we repeat the User History N times.
+            # Shape: [num_candidates, history_len, title_len]
             batch_h_titles = torch.tensor(np.array(h_titles), dtype=torch.long).unsqueeze(0).repeat(num_candidates, 1, 1).to(device)
             batch_h_cats = torch.tensor(np.array(h_cats), dtype=torch.long).unsqueeze(0).repeat(num_candidates, 1).to(device)
             batch_h_subcats = torch.tensor(np.array(h_subcats), dtype=torch.long).unsqueeze(0).repeat(num_candidates, 1).to(device)
             
-            # Get Candidate Features (Batch)
+            # 3. Fetch Candidate Features
             c_titles, c_cats, c_subcats = [], [], []
             for nid in candidate_ids:
                 d = test_news_lookup.get(nid, test_news_lookup['PAD'])
@@ -242,39 +172,29 @@ def main():
             batch_c_cats = torch.tensor(np.array(c_cats), dtype=torch.long).to(device)
             batch_c_subcats = torch.tensor(np.array(c_subcats), dtype=torch.long).to(device)
             
-            # 4. Forward Pass
+            # --- Forward Pass ---
             logits = model(batch_h_titles, batch_h_cats, batch_h_subcats, 
                            batch_c_titles, batch_c_cats, batch_c_subcats)
             
-            # 5. Convert to Probabilities
             probs = torch.sigmoid(logits).cpu().numpy()
             
-            # 6. Store Result
-            # Format: {'id': 1, 'p1': 0.5, 'p2': 0.1, ...}
+            # --- Format Output ---
             submission_row = {'id': impression_id}
+            # Kaggle expects p1...p15. 
+            # If there are fewer than 15 candidates, fill with 0.
+            # If there are more, we just take the first 15 (though usually it's fixed).
             for i in range(15):
-                col_name = f'p{i+1}'
-                if i < len(probs):
-                    submission_row[col_name] = probs[i]
-                else:
-                    # Fallback if fewer than 15 candidates
-                    submission_row[col_name] = 0.0 
+                submission_row[f'p{i+1}'] = probs[i] if i < len(probs) else 0.0
+            
             results.append(submission_row)
 
-    # F. Write Submission CSV
-    print(f"Writing submission to {SUBMISSION_PATH}...")
-    
-    # Create DataFrame from list of dicts
-    # Pandas automatically uses keys as column headers
+    # Write output
+    print(f"Writing {len(results)} rows to {SUBMISSION_PATH}...")
     submission_df = pd.DataFrame(results)
-    
-    # Ensure column order explicitly
     cols = ['id'] + [f'p{i+1}' for i in range(15)]
     submission_df = submission_df[cols]
-    
-    # Write to CSV (index=False prevents writing the row index 0,1,2...)
     submission_df.to_csv(SUBMISSION_PATH, index=False)
-    print("Done! Upload 'submission.csv' to Kaggle.")
+    print("Done.")
 
 if __name__ == "__main__":
     main()
