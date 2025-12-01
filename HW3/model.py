@@ -1,99 +1,94 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import numpy as np
+
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads=16):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        
+        assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
+        
+        self.W_Q = nn.Linear(embed_dim, embed_dim)
+        self.W_K = nn.Linear(embed_dim, embed_dim)
+        self.W_V = nn.Linear(embed_dim, embed_dim)
+        self.W_O = nn.Linear(embed_dim, embed_dim)
+        
+    def forward(self, x):
+        batch_size, seq_len, _ = x.shape
+        
+        Q = self.W_Q(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        K = self.W_K(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        V = self.W_V(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / np.sqrt(self.head_dim)
+        attn_weights = torch.softmax(scores, dim=-1)
+        
+        output = torch.matmul(attn_weights, V)
+        output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.embed_dim)
+        
+        return self.W_O(output)
 
 class AdditiveAttention(nn.Module):
-    """
-    Learns to weight specific parts of the input (e.g., important words in a title,
-    or important news in a user's history).
-    """
     def __init__(self, embed_dim, hidden_dim=200):
         super().__init__()
         self.projection = nn.Linear(embed_dim, hidden_dim)
         self.activation = nn.Tanh()
         self.context_vector = nn.Linear(hidden_dim, 1, bias=False)
-        self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
-        # x: [batch, seq_len, embed_dim]
-        
-        # 1. Calculate Attention Scores
-        # [batch, seq_len, hidden_dim]
         proj = self.activation(self.projection(x))
-        # [batch, seq_len, 1]
         scores = self.context_vector(proj)
-        
-        # 2. Calculate Weights
-        weights = self.softmax(scores)
-        
-        # 3. Weighted Sum
-        # [batch, embed_dim]
+        weights = torch.softmax(scores, dim=1)
         output = torch.sum(weights * x, dim=1)
         return output
 
 class NewsEncoder(nn.Module):
-    def __init__(self, vocab_size, cat_vocab_size, subcat_vocab_size, 
-                 embed_dim=128, title_dim=128, cat_dim=32):
+    def __init__(self, vocab_size, cat_vocab_size, subcat_vocab_size, embed_dim=256):
         super().__init__()
+        # 1. Learn embeddings from scratch (No Pre-training)
         self.word_embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
         
-        # --- IMPROVEMENT 1: 1D CNN for Title ---
-        # Captures local context (phrases) instead of just words
-        self.cnn = nn.Conv1d(in_channels=embed_dim, 
-                             out_channels=title_dim, 
-                             kernel_size=3, 
-                             padding=1)
-        self.activation = nn.LeakyReLU(0.1)
+        # 2. DROPOUT IS CRITICAL for avoiding overfitting
+        self.dropout = nn.Dropout(0.2)
         
-        # --- IMPROVEMENT 2: Attention for Title ---
-        # Decides which words/phrases are most important
-        self.title_attention = AdditiveAttention(title_dim)
-        
-        self.cat_embedding = nn.Embedding(cat_vocab_size, cat_dim, padding_idx=0)
-        self.subcat_embedding = nn.Embedding(subcat_vocab_size, cat_dim, padding_idx=0)
-        
-        self.final_layer = nn.Linear(title_dim + cat_dim + cat_dim, embed_dim)
+        # 3. Use Self-Attention instead of CNN
+        self.self_attn = MultiHeadSelfAttention(embed_dim, num_heads=16)
         self.layer_norm = nn.LayerNorm(embed_dim)
+        self.additive_attn = AdditiveAttention(embed_dim)
 
     def forward(self, title, category, subcategory):
-        # 1. Embed Words [batch, 30, 128]
-        word_vecs = self.word_embedding(title)
+        x = self.word_embedding(title)
+        x = self.dropout(x)
         
-        # 2. CNN expects [batch, channels, seq_len] -> Permute
-        word_vecs = word_vecs.permute(0, 2, 1)
+        # Residual Connection
+        attn_out = self.self_attn(x)
+        x = self.layer_norm(x + attn_out)
         
-        # 3. Apply CNN
-        feature_map = self.activation(self.cnn(word_vecs))
-        
-        # 4. Permute back [batch, 30, 128]
-        feature_map = feature_map.permute(0, 2, 1)
-        
-        # 5. Apply Attention to pool into a single vector
-        title_vec = self.title_attention(feature_map)
-
-        # 6. Categories
-        cat_vec = self.cat_embedding(category)
-        subcat_vec = self.subcat_embedding(subcategory)
-        
-        # 7. Concatenate and Project
-        combined = torch.cat([title_vec, cat_vec, subcat_vec], dim=1)
-        out = self.activation(self.layer_norm(self.final_layer(combined)))
-        
-        return out
+        title_vec = self.additive_attn(x)
+        return title_vec
 
 class UserEncoder(nn.Module):
-    def __init__(self, embed_dim):
+    def __init__(self, embed_dim=256):
         super().__init__()
-        # --- IMPROVEMENT 3: Attention for User History ---
-        # Learns which clicked news are relevant
-        self.attention = AdditiveAttention(embed_dim)
-        
+        self.self_attn = MultiHeadSelfAttention(embed_dim, num_heads=16)
+        self.layer_norm = nn.LayerNorm(embed_dim)
+        self.additive_attn = AdditiveAttention(embed_dim)
+        self.dropout = nn.Dropout(0.2)
+
     def forward(self, history_embeddings):
-        # history_embeddings: [batch, 50, 128]
-        return self.attention(history_embeddings)
+        x = self.dropout(history_embeddings)
+        
+        attn_out = self.self_attn(x)
+        x = self.layer_norm(x + attn_out)
+        
+        user_vec = self.additive_attn(x)
+        return user_vec
 
 class BaselineModel(nn.Module):
-    def __init__(self, vocab_size, cat_vocab_size, subcat_vocab_size, embed_dim=128):
+    def __init__(self, vocab_size, cat_vocab_size, subcat_vocab_size, embed_dim=256):
         super().__init__()
         self.news_encoder = NewsEncoder(vocab_size, cat_vocab_size, subcat_vocab_size, embed_dim)
         self.user_encoder = UserEncoder(embed_dim)
@@ -107,24 +102,15 @@ class BaselineModel(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
         
-    def forward(self, hist_titles, hist_cats, hist_subcats, 
-                cand_title, cand_cat, cand_subcat):
+    def forward(self, h_titles, h_cats, h_subcats, c_title, c_cat, c_subcat):
+        cand_embed = self.news_encoder(c_title, c_cat, c_subcat)
         
-        # 1. Encode Candidate
-        cand_embedding = self.news_encoder(cand_title, cand_cat, cand_subcat)
+        batch, h_len, t_len = h_titles.shape
+        h_emb = self.news_encoder(
+            h_titles.view(-1, t_len), 
+            h_cats.view(-1), 
+            h_subcats.view(-1)
+        ).view(batch, h_len, -1)
         
-        # 2. Encode History
-        batch_size, history_len, title_len = hist_titles.shape
-        hist_titles_flat = hist_titles.view(batch_size * history_len, title_len)
-        hist_cats_flat = hist_cats.view(batch_size * history_len)
-        hist_subcats_flat = hist_subcats.view(batch_size * history_len)
-        
-        history_embeddings_flat = self.news_encoder(hist_titles_flat, hist_cats_flat, hist_subcats_flat)
-        history_embeddings = history_embeddings_flat.view(batch_size, history_len, -1)
-        
-        # 3. Encode User
-        user_embedding = self.user_encoder(history_embeddings)
-        
-        # 4. Dot Product
-        score = torch.sum(user_embedding * cand_embedding, dim=1)
-        return score
+        user_embed = self.user_encoder(h_emb)
+        return torch.sum(user_embed * cand_embed, dim=1)
