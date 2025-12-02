@@ -18,62 +18,55 @@ NEWS_LOOKUP_PATH = 'processed/news_lookup.pkl'
 VOCAB_PATH = 'processed/vocabs.pkl'
 MODEL_SAVE_PATH = 'baseline_model.pt'
 
+NEWS_MATRIX_PATH = 'processed/news_features.npy'
+USER_DATA_PATH = 'processed/user_data.pkl'
+
 class NewsDataset(Dataset):
-    def __init__(self, train_data_path, news_lookup_path):
-        # 1. Load Data
-        df = pd.read_pickle(train_data_path)
-        self.news_lookup = pickle.load(open(news_lookup_path, 'rb'))
+    def __init__(self, news_matrix_path, user_data_path):
+        # 1. Load the Big News Matrix (Int32)
+        # Shape: [Num_News, 32]
+        self.news_matrix = torch.tensor(
+            np.load(news_matrix_path), dtype=torch.long
+        )
         
-        # 2. PRE-PROCESS to Remove Pandas Overhead
-        # Convert dataframe to a list of tuples/dicts which is much faster to access
-        # We process the 'clicked_news' and 'candidate_news' columns into lists
-        print("Pre-processing dataset into memory...")
-        self.samples = []
-        
-        # Optional: Limit size for debugging if needed
-        # df = df.head(10000) 
-        
-        for _, row in tqdm(df.iterrows(), total=len(df), desc="Converting"):
-            self.samples.append({
-                'label': row['label'],
-                'candidate_news': row['candidate_news'],
-                'clicked_news': row['clicked_news']
-            })
+        # 2. Load the User Behaviors (Indices)
+        with open(user_data_path, 'rb') as f:
+            data = pickle.load(f)
             
+        self.history = torch.tensor(data['history'], dtype=torch.long)   # [N, 50]
+        self.candidate = torch.tensor(data['candidate'], dtype=torch.long) # [N]
+        self.label = torch.tensor(data['label'], dtype=torch.float32)      # [N]
+        
     def __len__(self):
-        return len(self.samples)
+        return len(self.label)
         
     def __getitem__(self, idx):
-        # 3. Fast List Access (No more .iloc)
-        row = self.samples[idx]
-        label = row['label']
+        # --- INSTANT LOOKUP (No Loops) ---
         
-        # Candidate
-        candidate_data = self.news_lookup.get(row['candidate_news'], self.news_lookup['PAD'])
-        cand_title = torch.tensor(candidate_data['title'], dtype=torch.long)
-        cand_cat = torch.tensor(candidate_data['category'], dtype=torch.long)
-        cand_subcat = torch.tensor(candidate_data['subcategory'], dtype=torch.long)
+        # 1. Get Indices
+        hist_indices = self.history[idx] # [50]
+        cand_index = self.candidate[idx] # Scalar
+        
+        # 2. Slice the News Matrix (Fast GPU/CPU operation)
+        # Result: [50, 32] and [32]
+        hist_data = self.news_matrix[hist_indices] 
+        cand_data = self.news_matrix[cand_index]
+        
+        # 3. Unpack Features (Title=0-29, Cat=30, Subcat=31)
+        # Note: Adjust 30 based on your MAX_TITLE_LEN
+        TITLE_LEN = 30
         
         # History
-        history_titles = []
-        history_cats = []
-        history_subcats = []
+        h_titles = hist_data[:, :TITLE_LEN]
+        h_cats = hist_data[:, TITLE_LEN]
+        h_subcats = hist_data[:, TITLE_LEN+1]
         
-        # This loop is still a bit slow, but much faster without pandas overhead
-        for news_id in row['clicked_news']:
-            d = self.news_lookup.get(news_id, self.news_lookup['PAD'])
-            history_titles.append(d['title'])
-            history_cats.append(d['category'])
-            history_subcats.append(d['subcategory'])
+        # Candidate
+        c_title = cand_data[:TITLE_LEN]
+        c_cat = cand_data[TITLE_LEN]
+        c_subcat = cand_data[TITLE_LEN+1]
         
-        # Convert to numpy first for speed, then tensor
-        return (
-            torch.tensor(np.array(history_titles), dtype=torch.long),
-            torch.tensor(np.array(history_cats), dtype=torch.long),
-            torch.tensor(np.array(history_subcats), dtype=torch.long),
-            cand_title, cand_cat, cand_subcat,
-            torch.tensor(label, dtype=torch.float32)
-        )
+        return h_titles, h_cats, h_subcats, c_title, c_cat, c_subcat, self.label[idx]
 
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -84,8 +77,8 @@ def main():
         vocabs = pickle.load(f)
     
     # Dataset
-    dataset = NewsDataset(TRAIN_DATA_PATH, NEWS_LOOKUP_PATH)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+    dataset = NewsDataset(NEWS_MATRIX_PATH, USER_DATA_PATH)
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
     
     # Model
     model = BaselineModel(
