@@ -80,50 +80,50 @@ def main():
     
     print(f"--- Starting Training (Batch Size {BATCH_SIZE}) ---")
     
-    TITLE_LEN = 30 # Must match your preprocessing
-    
+    scaler = torch.cuda.amp.GradScaler() 
+
+    # 2. Reduce History Length (Config)
+    TRAIN_HISTORY_LEN = 20 # Use only last 20 clicks for training (Speed hack)
+
     for epoch in range(EPOCHS):
         model.train()
         total_loss = 0.0
-        
-        # Enable tqdm but update less frequently to save console I/O time
         loop = tqdm(dataloader, desc=f"Epoch {epoch+1}")
         
         for batch_hist_ids, batch_cand_id, batch_labels in loop:
             # Move Indices to GPU
-            batch_hist_ids = batch_hist_ids.to(device)   # [Batch, 50]
-            batch_cand_id = batch_cand_id.to(device)     # [Batch]
+            batch_hist_ids = batch_hist_ids.to(device)
+            batch_cand_id = batch_cand_id.to(device)
             batch_labels = batch_labels.float().to(device)
             
-            # --- GPU-SIDE LOOKUP ---
-            # This is 100x faster than doing it in the Dataset
+            # --- OPTIMIZATION: Slice History ---
+            # Instead of 50, we take the last 20. 
+            # Since we padded with 0s at the start, slicing [-20:] keeps the real data.
+            batch_hist_ids = batch_hist_ids[:, -TRAIN_HISTORY_LEN:]
             
-            # 1. Look up features for History
-            # Result: [Batch, 50, 32]
+            # Lookup Features (Same as before)
             hist_feats = news_matrix[batch_hist_ids]
-            
-            # 2. Look up features for Candidate
-            # Result: [Batch, 32]
             cand_feats = news_matrix[batch_cand_id]
             
-            # 3. Unpack (Slicing on GPU is instant)
-            # Features: Title (0-29), Cat (30), Subcat (31)
+            h_titles = hist_feats[:, :, :30]
+            h_cats = hist_feats[:, :, 30]
+            h_subcats = hist_feats[:, :, 31]
             
-            h_titles = hist_feats[:, :, :TITLE_LEN]
-            h_cats = hist_feats[:, :, TITLE_LEN]
-            h_subcats = hist_feats[:, :, TITLE_LEN+1]
+            c_title = cand_feats[:, :30]
+            c_cat = cand_feats[:, 30]
+            c_subcat = cand_feats[:, 31]
             
-            c_title = cand_feats[:, :TITLE_LEN]
-            c_cat = cand_feats[:, TITLE_LEN]
-            c_subcat = cand_feats[:, TITLE_LEN+1]
-            
-            # --- Forward Pass ---
             optimizer.zero_grad()
-            scores = model(h_titles, h_cats, h_subcats, c_title, c_cat, c_subcat)
-            loss = criterion(scores, batch_labels)
             
-            loss.backward()
-            optimizer.step()
+            # --- OPTIMIZATION: Mixed Precision ---
+            with torch.cuda.amp.autocast():
+                scores = model(h_titles, h_cats, h_subcats, c_title, c_cat, c_subcat)
+                loss = criterion(scores, batch_labels)
+            
+            # Scaled Backward
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             
             total_loss += loss.item()
             loop.set_postfix(loss=loss.item())
