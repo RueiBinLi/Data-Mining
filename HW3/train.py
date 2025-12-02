@@ -10,7 +10,7 @@ from model import BaselineModel # Import from your new model file
 # --- Configuration ---
 BATCH_SIZE = 64
 LEARNING_RATE = 0.0001 # Lower LR for stability
-EPOCHS = 5
+EPOCHS = 8
 EMBED_DIM = 256
 
 TRAIN_DATA_PATH = 'processed/train_data.pkl'
@@ -20,14 +20,32 @@ MODEL_SAVE_PATH = 'baseline_model.pt'
 
 class NewsDataset(Dataset):
     def __init__(self, train_data_path, news_lookup_path):
-        self.train_data = pd.read_pickle(train_data_path)
+        # 1. Load Data
+        df = pd.read_pickle(train_data_path)
         self.news_lookup = pickle.load(open(news_lookup_path, 'rb'))
         
+        # 2. PRE-PROCESS to Remove Pandas Overhead
+        # Convert dataframe to a list of tuples/dicts which is much faster to access
+        # We process the 'clicked_news' and 'candidate_news' columns into lists
+        print("Pre-processing dataset into memory...")
+        self.samples = []
+        
+        # Optional: Limit size for debugging if needed
+        # df = df.head(10000) 
+        
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="Converting"):
+            self.samples.append({
+                'label': row['label'],
+                'candidate_news': row['candidate_news'],
+                'clicked_news': row['clicked_news']
+            })
+            
     def __len__(self):
-        return len(self.train_data)
+        return len(self.samples)
         
     def __getitem__(self, idx):
-        row = self.train_data.iloc[idx]
+        # 3. Fast List Access (No more .iloc)
+        row = self.samples[idx]
         label = row['label']
         
         # Candidate
@@ -37,13 +55,18 @@ class NewsDataset(Dataset):
         cand_subcat = torch.tensor(candidate_data['subcategory'], dtype=torch.long)
         
         # History
-        history_titles, history_cats, history_subcats = [], [], []
+        history_titles = []
+        history_cats = []
+        history_subcats = []
+        
+        # This loop is still a bit slow, but much faster without pandas overhead
         for news_id in row['clicked_news']:
             d = self.news_lookup.get(news_id, self.news_lookup['PAD'])
             history_titles.append(d['title'])
             history_cats.append(d['category'])
             history_subcats.append(d['subcategory'])
         
+        # Convert to numpy first for speed, then tensor
         return (
             torch.tensor(np.array(history_titles), dtype=torch.long),
             torch.tensor(np.array(history_cats), dtype=torch.long),
