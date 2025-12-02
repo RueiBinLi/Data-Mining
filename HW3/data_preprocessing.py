@@ -7,11 +7,11 @@ import os
 
 # --- Configuration ---
 NEWS_TSV_PATH = 'train/train_news.tsv'
-BEHAVIORS_TSV_PATH = 'train/train_behaviors.tsv'
+[cite_start]BEHAVIORS_TSV_PATH = 'train/train_behaviors.tsv' # [cite: 160, 166]
 
 PROCESSED_PATH = 'processed'
-NEWS_MATRIX_PATH = os.path.join(PROCESSED_PATH, 'news_features.npy') # The Matrix
-USER_DATA_PATH = os.path.join(PROCESSED_PATH, 'user_data.pkl')       # The Behaviors
+NEWS_MATRIX_PATH = os.path.join(PROCESSED_PATH, 'news_features.npy')
+USER_DATA_PATH = os.path.join(PROCESSED_PATH, 'user_data.pkl')
 VOCAB_PATH = os.path.join(PROCESSED_PATH, 'vocabs.pkl')
 
 MAX_TITLE_LEN = 30
@@ -33,17 +33,14 @@ def main():
     news_df['title'] = news_df['title'].fillna('')
 
     print("2. Building Vocabs...")
-    # Category Vocab
     cats = news_df['category'].unique()
     cat2idx = {k: v+1 for v, k in enumerate(cats)}
     cat2idx['PAD'] = 0
     
-    # Subcategory Vocab
     subcats = news_df['subcategory'].unique()
     subcat2idx = {k: v+1 for v, k in enumerate(subcats)}
     subcat2idx['PAD'] = 0
     
-    # Word Vocab
     word_counter = Counter()
     for title in tqdm(news_df['title']):
         word_counter.update(title.lower().split())
@@ -53,28 +50,20 @@ def main():
     word2idx['PAD'] = 0
     word2idx['UNK'] = 1
 
-    # --- News ID Mapping ---
-    # Map 'N123' -> 1, 'N456' -> 2
     news_ids = news_df['news_id'].values
     nid2idx = {nid: i+1 for i, nid in enumerate(news_ids)}
     nid2idx['PAD'] = 0
     
-    # --- Build the News Feature Matrix ---
-    # Shape: [Num_News + 1, 30 + 1 + 1] -> (Title + Cat + Subcat)
-    # Row 0 is PAD
     print("3. Building News Matrix...")
     num_news = len(news_ids)
-    # Matrix columns: 0-29 (Title), 30 (Cat), 31 (Subcat)
+    # 0-29: Title, 30: Cat, 31: Subcat
     feature_matrix = np.zeros((num_news + 1, MAX_TITLE_LEN + 2), dtype=np.int32)
     
     for i, row in tqdm(news_df.iterrows(), total=len(news_df)):
         idx = nid2idx[row['news_id']]
-        
-        # Categories
         feature_matrix[idx, MAX_TITLE_LEN] = cat2idx.get(row['category'], 0)
         feature_matrix[idx, MAX_TITLE_LEN+1] = subcat2idx.get(row['subcategory'], 0)
         
-        # Title
         tokens = row['title'].lower().split()
         token_ids = [word2idx.get(w, 1) for w in tokens][:MAX_TITLE_LEN]
         feature_matrix[idx, :len(token_ids)] = token_ids
@@ -83,57 +72,55 @@ def main():
     # 2. Process Behaviors -> Int Arrays
     # ============================
     print("4. Processing Behaviors...")
+    # Add low_memory=False to silence DtypeWarning
     behaviors_df = pd.read_csv(
         BEHAVIORS_TSV_PATH, sep='\t', header=None,
-        names=['id', 'user_id', 'time', 'clicked_news', 'impressions']
+        names=['id', 'user_id', 'time', 'clicked_news', 'impressions'],
+        low_memory=False 
     )
     
-    # Helper to map list of NIDs to list of Ints
     def map_history(hist_str):
         if pd.isna(hist_str): return [0] * MAX_HISTORY_LEN
         nids = hist_str.split()
-        # Truncate/Pad
-        nids = nids[-MAX_HISTORY_LEN:] # Keep recent
+        nids = nids[-MAX_HISTORY_LEN:] 
         pad_len = MAX_HISTORY_LEN - len(nids)
-        
-        # Map to Ints
         int_ids = [nid2idx.get(n, 0) for n in nids]
         return [0]*pad_len + int_ids
 
-    # Process History
     print("   - Encoding Histories...")
-    # This might take a minute but saves hours of training time
     tqdm.pandas()
     behaviors_df['history_indices'] = behaviors_df['clicked_news'].progress_apply(map_history)
     
-    # Process Impressions (Explode)
     print("   - Exploding Impressions...")
     behaviors_df['impressions'] = behaviors_df['impressions'].fillna('').str.split()
     behaviors_df = behaviors_df.explode('impressions').dropna(subset=['impressions'])
     
-    # Parse "N123-1" -> N123, 1
     print("   - Parsing Labels...")
     impr_split = behaviors_df['impressions'].str.split('-', expand=True)
-    behaviors_df['candidate_nid'] = impr_split[0]
-    behaviors_df['label'] = impr_split[1].astype(int)
     
-    # Map Candidate to Int
+    behaviors_df['candidate_nid'] = impr_split[0]
+    behaviors_df['label'] = impr_split[1] # Keep as object first
+    
+    # --- DROP BAD ROWS ---
+    initial_len = len(behaviors_df)
+    behaviors_df = behaviors_df.dropna(subset=['label'])
+    dropped = initial_len - len(behaviors_df)
+    if dropped > 0:
+        print(f"     Dropped {dropped} malformed impressions.")
+        
+    behaviors_df['label'] = behaviors_df['label'].astype(int)
     behaviors_df['candidate_idx'] = behaviors_df['candidate_nid'].map(nid2idx).fillna(0).astype(int)
     
     # ============================
     # 3. Save Optimized Data
     # ============================
     print("5. Saving Optimized Data...")
-    
-    # Stack history into a 2D numpy array [N_samples, 50]
     history_matrix = np.stack(behaviors_df['history_indices'].values)
     candidate_array = behaviors_df['candidate_idx'].values
     label_array = behaviors_df['label'].values
     
-    # Save News Matrix
     np.save(NEWS_MATRIX_PATH, feature_matrix)
     
-    # Save Training Arrays
     with open(USER_DATA_PATH, 'wb') as f:
         pickle.dump({
             'history': history_matrix,
@@ -141,11 +128,10 @@ def main():
             'label': label_array
         }, f)
         
-    # Save Vocabs (for model init)
     with open(VOCAB_PATH, 'wb') as f:
         pickle.dump({
             'word': word2idx, 'category': cat2idx, 'subcategory': subcat2idx,
-            'nid2idx': nid2idx # Useful for inference later
+            'nid2idx': nid2idx
         }, f)
 
     print("Done! Data is now vectorized.")
