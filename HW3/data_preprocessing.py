@@ -3,200 +3,152 @@ import numpy as np
 from collections import Counter
 from tqdm import tqdm
 import pickle
+import os
 
 # --- Configuration ---
-# These paths point to your dataset files [cite: 14]
 NEWS_TSV_PATH = 'train/train_news.tsv'
 BEHAVIORS_TSV_PATH = 'train/train_behaviors.tsv'
-ENTITY_EMBEDDING_PATH = 'train_entity_embedding.vec' # [cite: 17, 51]
 
-# These are for the processed output
-PROCESSED_NEWS_PATH = 'processed/news_lookup.pkl'
-PROCESSED_TRAIN_PATH = 'processed/train_data.pkl'
-VOCAB_PATH = 'processed/vocabs.pkl'
+PROCESSED_PATH = 'processed'
+NEWS_MATRIX_PATH = os.path.join(PROCESSED_PATH, 'news_features.npy') # The Matrix
+USER_DATA_PATH = os.path.join(PROCESSED_PATH, 'user_data.pkl')       # The Behaviors
+VOCAB_PATH = os.path.join(PROCESSED_PATH, 'vocabs.pkl')
 
-# --- Model Hyperparameters ---
-# You can adjust these
-MAX_TITLE_LEN = 30     # Max words in a news title
-MAX_HISTORY_LEN = 50   # Max news articles in a user's click history [cite: 25]
+MAX_TITLE_LEN = 30
+MAX_HISTORY_LEN = 50
 
-def preprocess_news_data(news_path, max_title_len):
-    """
-    Reads news.tsv, builds vocabularies, and creates a
-    processed news lookup dictionary.
-    """
-    print("1. Loading news.tsv...")
-    # Define column names based on the PDF
+def main():
+    if not os.path.exists(PROCESSED_PATH):
+        os.makedirs(PROCESSED_PATH)
+
+    # ============================
+    # 1. Process News -> Matrix
+    # ============================
+    print("1. Loading News...")
     news_df = pd.read_csv(
-        news_path,
-        sep='\\t',
-        header=None,
+        NEWS_TSV_PATH, sep='\t', header=None,
         names=['news_id', 'category', 'subcategory', 'title', 'abstract', 
                'url', 'title_entities', 'abstract_entities']
     )
-    
-    # --- Build Vocabularies ---
-    print("2. Building vocabularies...")
-    
-    # Category vocab
-    categories = news_df['category'].unique()
-    cat_to_index = {cat: i + 1 for i, cat in enumerate(categories)} # +1 for padding
-    cat_to_index['PAD'] = 0
-    
-    # Subcategory vocab
-    subcategories = news_df['subcategory'].unique()
-    subcat_to_index = {subcat: i + 1 for i, subcat in enumerate(subcategories)}
-    subcat_to_index['PAD'] = 0
-    
-    # Word vocab (from titles)
-    word_counter = Counter()
-    # We can fillna here for the counter
-    for title in tqdm(news_df['title'].fillna('')):
-        word_counter.update(title.lower().split())
-        
-    # Keep only common words (e.g., count > 1)
-    word_vocab = [word for word, count in word_counter.items() if count > 1]
-    word_to_index = {word: i + 2 for i, word in enumerate(word_vocab)} # +2 for PAD and UNK
-    word_to_index['PAD'] = 0
-    word_to_index['UNK'] = 1 # For unknown words
-
-    # --- Create Processed News Lookup ---
-    print(f"3. Processing news articles (padding to {max_title_len} tokens)...")
-    
-    # --- FIX 1: Fill NaNs on the whole column first ---
-    # This ensures row['title'] will always be a string inside the loop.
     news_df['title'] = news_df['title'].fillna('')
-    
-    news_lookup = {}
-    for _, row in tqdm(news_df.iterrows(), total=len(news_df)):
-        
-        # --- FIX 2: Remove .fillna() from inside the loop ---
-        title_tokens = row['title'].lower().split()
-        
-        # Convert words to indices
-        title_indices = [word_to_index.get(word, word_to_index['UNK']) for word in title_tokens]
-        
-        # Pad/Truncate title
-        padded_title = np.zeros(max_title_len, dtype=np.int32)
-        L = min(len(title_indices), max_title_len)
-        padded_title[:L] = title_indices[:L]
-        
-        news_lookup[row['news_id']] = {
-            'category': cat_to_index.get(row['category'], cat_to_index['PAD']),
-            'subcategory': subcat_to_index.get(row['subcategory'], subcat_to_index['PAD']),
-            'title': padded_title
-        }
-        
-    # Add a 'PAD' news item for padding user histories
-    news_lookup['PAD'] = {
-        'category': cat_to_index['PAD'],
-        'subcategory': subcat_to_index['PAD'],
-        'title': np.zeros(max_title_len, dtype=np.int32)
-    }
 
-    vocabs = {
-        'word': word_to_index,
-        'category': cat_to_index,
-        'subcategory': subcat_to_index
-    }
+    print("2. Building Vocabs...")
+    # Category Vocab
+    cats = news_df['category'].unique()
+    cat2idx = {k: v+1 for v, k in enumerate(cats)}
+    cat2idx['PAD'] = 0
     
-    return news_lookup, vocabs
+    # Subcategory Vocab
+    subcats = news_df['subcategory'].unique()
+    subcat2idx = {k: v+1 for v, k in enumerate(subcats)}
+    subcat2idx['PAD'] = 0
+    
+    # Word Vocab
+    word_counter = Counter()
+    for title in tqdm(news_df['title']):
+        word_counter.update(title.lower().split())
+    
+    word_vocab = [w for w, c in word_counter.items() if c > 1]
+    word2idx = {w: i+2 for i, w in enumerate(word_vocab)}
+    word2idx['PAD'] = 0
+    word2idx['UNK'] = 1
 
-def preprocess_behaviors_data(behaviors_path, max_history_len):
-    """
-    Reads behaviors.tsv and explodes the impressions column
-    to create training samples.
-    """
-    print(f"1. Loading behaviors.tsv (this may take a while)...")
+    # --- News ID Mapping ---
+    # Map 'N123' -> 1, 'N456' -> 2
+    news_ids = news_df['news_id'].values
+    nid2idx = {nid: i+1 for i, nid in enumerate(news_ids)}
+    nid2idx['PAD'] = 0
+    
+    # --- Build the News Feature Matrix ---
+    # Shape: [Num_News + 1, 30 + 1 + 1] -> (Title + Cat + Subcat)
+    # Row 0 is PAD
+    print("3. Building News Matrix...")
+    num_news = len(news_ids)
+    # Matrix columns: 0-29 (Title), 30 (Cat), 31 (Subcat)
+    feature_matrix = np.zeros((num_news + 1, MAX_TITLE_LEN + 2), dtype=np.int32)
+    
+    for i, row in tqdm(news_df.iterrows(), total=len(news_df)):
+        idx = nid2idx[row['news_id']]
+        
+        # Categories
+        feature_matrix[idx, MAX_TITLE_LEN] = cat2idx.get(row['category'], 0)
+        feature_matrix[idx, MAX_TITLE_LEN+1] = subcat2idx.get(row['subcategory'], 0)
+        
+        # Title
+        tokens = row['title'].lower().split()
+        token_ids = [word2idx.get(w, 1) for w in tokens][:MAX_TITLE_LEN]
+        feature_matrix[idx, :len(token_ids)] = token_ids
+
+    # ============================
+    # 2. Process Behaviors -> Int Arrays
+    # ============================
+    print("4. Processing Behaviors...")
     behaviors_df = pd.read_csv(
-        behaviors_path,
-        sep='\\t',
-        header=None,
+        BEHAVIORS_TSV_PATH, sep='\t', header=None,
         names=['id', 'user_id', 'time', 'clicked_news', 'impressions']
     )
     
-    print("2. Preprocessing behaviors...")
+    # Helper to map list of NIDs to list of Ints
+    def map_history(hist_str):
+        if pd.isna(hist_str): return [0] * MAX_HISTORY_LEN
+        nids = hist_str.split()
+        # Truncate/Pad
+        nids = nids[-MAX_HISTORY_LEN:] # Keep recent
+        pad_len = MAX_HISTORY_LEN - len(nids)
+        
+        # Map to Ints
+        int_ids = [nid2idx.get(n, 0) for n in nids]
+        return [0]*pad_len + int_ids
+
+    # Process History
+    print("   - Encoding Histories...")
+    # This might take a minute but saves hours of training time
+    tqdm.pandas()
+    behaviors_df['history_indices'] = behaviors_df['clicked_news'].progress_apply(map_history)
     
-    # Split the space-separated strings into lists
-    behaviors_df['clicked_news'] = behaviors_df['clicked_news'].fillna('').str.split()
+    # Process Impressions (Explode)
+    print("   - Exploding Impressions...")
     behaviors_df['impressions'] = behaviors_df['impressions'].fillna('').str.split()
+    behaviors_df = behaviors_df.explode('impressions').dropna(subset=['impressions'])
     
-    # --- Pad/Truncate Click History ---
-    # We pad the *history* (clicked_news) here [cite: 25]
-    def pad_history(history):
-        padded_history = ['PAD'] * max_history_len
-        L = min(len(history), max_history_len)
-        if L > 0:
-            padded_history[-L:] = history[-L:] # Get most recent L items
-        return padded_history
+    # Parse "N123-1" -> N123, 1
+    print("   - Parsing Labels...")
+    impr_split = behaviors_df['impressions'].str.split('-', expand=True)
+    behaviors_df['candidate_nid'] = impr_split[0]
+    behaviors_df['label'] = impr_split[1].astype(int)
     
-    print(f"3. Padding user histories (max {max_history_len} items)...")
-    behaviors_df['clicked_news'] = behaviors_df['clicked_news'].apply(pad_history)
+    # Map Candidate to Int
+    behaviors_df['candidate_idx'] = behaviors_df['candidate_nid'].map(nid2idx).fillna(0).astype(int)
     
-    # --- Explode Impressions ---
-    # This is the key step: turn 1 row with 15 impressions into 15 rows
-    print("4. Exploding impressions column...")
-    behaviors_df = behaviors_df.explode('impressions').reset_index(drop=True)
+    # ============================
+    # 3. Save Optimized Data
+    # ============================
+    print("5. Saving Optimized Data...")
     
-    # --- Parse Impressions ---
-    # Split "{news_id}-{clicked}" 
-    print("5. Parsing impressions (news_id and label)...")
+    # Stack history into a 2D numpy array [N_samples, 50]
+    history_matrix = np.stack(behaviors_df['history_indices'].values)
+    candidate_array = behaviors_df['candidate_idx'].values
+    label_array = behaviors_df['label'].values
     
-    # 1. Split "{news_id}-{clicked}"
-    impression_split = behaviors_df['impressions'].str.split('-', expand=True)
-    behaviors_df['candidate_news'] = impression_split[0]
-    behaviors_df['label'] = impression_split[1] # Keep as object type for now
-
-    # 2. DROP bad rows (where label is None)
-    # This is the key fix
-    behaviors_df = behaviors_df.dropna(subset=['label'])
-
-    # 3. NOW it's safe to convert to integer
-    behaviors_df['label'] = behaviors_df['label'].astype(int)
+    # Save News Matrix
+    np.save(NEWS_MATRIX_PATH, feature_matrix)
     
-    # Select and rename final columns
-    final_data = behaviors_df[[
-        'id', 
-        'user_id', 
-        'clicked_news', 
-        'candidate_news', 
-        'label'
-    ]]
-    
-    return final_data
-
-def main():
-    # --- Part 1: Process News ---
-    print("--- Starting News Preprocessing ---")
-    news_lookup, vocabs = preprocess_news_data(NEWS_TSV_PATH, MAX_TITLE_LEN)
-    
-    # Save the processed news and vocabs
-    print(f"Saving news lookup to {PROCESSED_NEWS_PATH}")
-    with open(PROCESSED_NEWS_PATH, 'wb') as f:
-        pickle.dump(news_lookup, f)
+    # Save Training Arrays
+    with open(USER_DATA_PATH, 'wb') as f:
+        pickle.dump({
+            'history': history_matrix,
+            'candidate': candidate_array,
+            'label': label_array
+        }, f)
         
-    print(f"Saving vocabs to {VOCAB_PATH}")
+    # Save Vocabs (for model init)
     with open(VOCAB_PATH, 'wb') as f:
-        pickle.dump(vocabs, f)
-        
-    print(f"Vocab sizes: Word={len(vocabs['word'])}, Cat={len(vocabs['category'])}, SubCat={len(vocabs['subcategory'])}")
+        pickle.dump({
+            'word': word2idx, 'category': cat2idx, 'subcategory': subcat2idx,
+            'nid2idx': nid2idx # Useful for inference later
+        }, f)
 
-    # --- Part 2: Process Behaviors ---
-    print("\n--- Starting Behaviors Preprocessing ---")
-    train_data = preprocess_behaviors_data(BEHAVIORS_TSV_PATH, MAX_HISTORY_LEN)
-    
-    # Save the final training data
-    print(f"Saving training data to {PROCESSED_TRAIN_PATH}")
-    train_data.to_pickle(PROCESSED_TRAIN_PATH)
-    
-    print("\nPreprocessing complete!")
-    print(f"Final training data has {len(train_data)} samples.")
-    print("Head of training data:")
-    print(train_data.head())
+    print("Done! Data is now vectorized.")
 
-if __name__ == "__main__":
-    # Create output directory if it doesn't exist
-    import os
-    os.makedirs('processed', exist_ok=True)
-    
+if __name__ == '__main__':
     main()
