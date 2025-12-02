@@ -7,7 +7,7 @@ import os
 
 # --- Configuration ---
 NEWS_TSV_PATH = 'train/train_news.tsv'
-[cite_start]BEHAVIORS_TSV_PATH = 'train/train_behaviors.tsv' # [cite: 160, 166]
+BEHAVIORS_TSV_PATH = 'train/train_behaviors.tsv'
 
 PROCESSED_PATH = 'processed'
 NEWS_MATRIX_PATH = os.path.join(PROCESSED_PATH, 'news_features.npy')
