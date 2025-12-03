@@ -57,7 +57,7 @@ def main():
     
     # 3. Model
     # Note: We pass 768 (input) and 256 (internal dim)
-    model = RobertaModel(ROBERTA_DIM, EMBED_DIM).to(device)
+    model = RobertaBaselineModel(ROBERTA_DIM, EMBED_DIM).to(device)
     
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
