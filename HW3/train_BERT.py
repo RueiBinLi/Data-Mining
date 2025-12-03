@@ -1,0 +1,96 @@
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
+import numpy as np
+import pickle
+import os
+from model_BERT import BertBaselineModel
+
+# --- Configuration ---
+BATCH_SIZE = 512
+LEARNING_RATE = 0.001
+EPOCHS = 8
+BERT_DIM = 768
+EMBED_DIM = 256 # Internal dimension
+
+# Paths
+BERT_MATRIX_PATH = 'processed/news_bert_embeddings.npy'
+USER_DATA_PATH = 'processed/user_data.pkl'
+MODEL_SAVE_PATH = 'bert_model.pt'
+
+class FastNewsDataset(Dataset):
+    def __init__(self, user_data_path):
+        with open(user_data_path, 'rb') as f:
+            data = pickle.load(f)
+        self.history = data['history']    
+        self.candidate = data['candidate'] 
+        self.label = data['label']        
+        
+    def __len__(self):
+        return len(self.label)
+        
+    def __getitem__(self, idx):
+        return self.history[idx], self.candidate[idx], self.label[idx]
+
+def main():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # 1. Load BERT Matrix to GPU
+    # Note: 768 floats * 100k news ~ 300MB VRAM. Very Safe.
+    print("Loading BERT Matrix...")
+    bert_matrix_np = np.load(BERT_MATRIX_PATH)
+    bert_matrix = torch.tensor(bert_matrix_np, dtype=torch.float32).to(device)
+    
+    # 2. DataLoader
+    print("Loading User Data...")
+    dataset = FastNewsDataset(USER_DATA_PATH)
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
+    
+    # 3. Model
+    model = BertBaselineModel(BERT_DIM, EMBED_DIM).to(device)
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    
+    print("--- Starting Training ---")
+    
+    scaler = torch.cuda.amp.GradScaler() 
+    TRAIN_HISTORY_LEN = 20
+    
+    for epoch in range(EPOCHS):
+        model.train()
+        total_loss = 0.0
+        loop = tqdm(dataloader, desc=f"Epoch {epoch+1}")
+        
+        for batch_hist_ids, batch_cand_id, batch_labels in loop:
+            batch_hist_ids = batch_hist_ids.to(device)
+            batch_cand_id = batch_cand_id.to(device)
+            batch_labels = batch_labels.float().to(device)
+            
+            # Slice History
+            batch_hist_ids = batch_hist_ids[:, -TRAIN_HISTORY_LEN:]
+            
+            # GPU Lookup (Now getting 768-dim Vectors)
+            hist_vecs = bert_matrix[batch_hist_ids] # [Batch, 20, 768]
+            cand_vec = bert_matrix[batch_cand_id]   # [Batch, 768]
+            
+            optimizer.zero_grad()
+            
+            with torch.cuda.amp.autocast():
+                scores = model(hist_vecs, cand_vec)
+                loss = criterion(scores, batch_labels)
+            
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            
+            total_loss += loss.item()
+            loop.set_postfix(loss=loss.item())
+            
+        print(f"Epoch {epoch+1} Loss: {total_loss/len(dataloader):.4f}")
+        
+    torch.save(model.state_dict(), MODEL_SAVE_PATH)
+
+if __name__ == "__main__":
+    main()
