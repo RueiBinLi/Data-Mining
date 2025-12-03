@@ -51,12 +51,12 @@ def main():
     # 2. Load Model
     print(f"Loading Model from {MODEL_PATH}...")
     try:
-        model = RobertaBaselineModel(BERT_DIM, EMBED_DIM).to(device)
+        model = HybridRobertaModel(BERT_DIM, EMBED_DIM).to(device)
         model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
         model.eval()
     except Exception as e:
         print(f"Error loading model: {e}")
-        print("Ensure 'model.py' defines the class 'RobertaBaselineModel' matching your saved weights.")
+        print("Ensure 'model.py' defines the class 'HybridRobertaModel' matching your saved weights.")
         return
 
     # 3. Read Test Behaviors
