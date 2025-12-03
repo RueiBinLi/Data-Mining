@@ -19,7 +19,7 @@ MAX_HISTORY = 20        # Must match what you used in train.py (20)
 # Paths
 TEST_BEHAVIORS_PATH = 'test/test_behaviors.tsv'
 SUBMISSION_PATH = 'submission_roberta.csv'
-MODEL_PATH = 'bert_model.pt'
+MODEL_PATH = 'roberta_model.pt'
 
 # Resources (Must match your preprocessing)
 NEWS_MATRIX_PATH = 'processed/news_roberta_embeddings.npy' 
