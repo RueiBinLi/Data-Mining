@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import pickle
 from tqdm import tqdm
-from model import RobertaModel
+from model_roberta import RobertaModel
 
 # Config
 BATCH_SIZE = 512

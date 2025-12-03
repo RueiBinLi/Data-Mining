@@ -8,7 +8,7 @@ import sys
 
 # --- Import your model architecture ---
 # Ensure model.py contains the BertBaselineModel (or RobertaModel) class
-from model import BertBaselineModel 
+from model_BERT import BertBaselineModel 
 
 # --- Configuration ---
 # Match these with your train.py settings
