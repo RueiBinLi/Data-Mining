@@ -8,7 +8,7 @@ import os
 
 # --- Import your RoBERTa model class ---
 # Ensure model.py has RobertaBaselineModel or RobertaModel defined
-from model import RobertaModel 
+from model_roberta import RobertaModel 
 
 # --- Config ---
 BATCH_SIZE = 512
