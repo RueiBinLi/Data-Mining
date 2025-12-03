@@ -18,7 +18,7 @@ MAX_HISTORY = 20        # Use the same history length you trained with (20 is fa
 
 # Paths
 TEST_BEHAVIORS = 'test/test_behaviors.tsv'
-SUBMISSION_PATH = 'submission.csv'
+SUBMISSION_PATH = 'submission_BERT.csv'
 
 # Resources (Must match what you generated in preprocessing)
 # If you used RoBERTa, change this to 'news_roberta_embeddings.npy'

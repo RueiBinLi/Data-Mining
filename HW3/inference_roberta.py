@@ -11,7 +11,7 @@ TEST_BEHAVIORS = 'test/test_behaviors.tsv'
 NEWS_MATRIX = 'processed/roberta_embeddings.npy'
 VOCAB = 'processed/vocabs.pkl'
 MODEL_PATH = 'roberta_model.pt'
-OUTPUT = 'submission.csv'
+OUTPUT = 'submission_roberta.csv'
 
 def main():
     device = torch.device('cuda')
