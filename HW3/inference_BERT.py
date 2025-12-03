@@ -6,61 +6,75 @@ from tqdm import tqdm
 import os
 import sys
 
-# --- Import your model architecture ---
-# Ensure model.py contains the BertBaselineModel (or RobertaModel) class
+# --- CONFIGURATION ---
+# Check your model.py class name!
+# If using RoBERTa: from model import RobertaModel
+# If using BERT:    from model import BertBaselineModel 
 from model_BERT import BertBaselineModel 
 
-# --- Configuration ---
-# Match these with your train.py settings
-BERT_DIM = 768          # Input vector size (BERT/RoBERTa base)
-EMBED_DIM = 256         # Internal model dimension
-MAX_HISTORY = 20        # Use the same history length you trained with (20 is faster/better)
+BERT_DIM = 768          # Input size (Standard for BERT/RoBERTa base)
+EMBED_DIM = 256         # Internal model dimension (Must match training!)
+MAX_HISTORY = 20        # Must match what you used in train.py (20)
 
 # Paths
-TEST_BEHAVIORS = 'test/test_behaviors.tsv'
-SUBMISSION_PATH = 'submission_BERT.csv'
-
-# Resources (Must match what you generated in preprocessing)
-# If you used RoBERTa, change this to 'news_roberta_embeddings.npy'
-NEWS_MATRIX_PATH = 'processed/news_bert_embeddings.npy' 
-VOCAB_PATH = 'processed/vocabs.pkl'
+TEST_BEHAVIORS_PATH = 'test/test_behaviors.tsv'
+SUBMISSION_PATH = 'submission_bert.csv'
 MODEL_PATH = 'bert_model.pt'
+
+# Resources (Must match your preprocessing)
+# If using RoBERTa:
+NEWS_MATRIX_PATH = 'processed/news_bert_embeddings.npy' 
+# If using BERT:
+# NEWS_MATRIX_PATH = 'processed/news_bert_embeddings.npy' 
+
+VOCAB_PATH = 'processed/vocabs.pkl'
 
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # 1. Load Resources
+    # 1. Load Resources (Global Matrix & Mappings)
     print("Loading Global Matrix & Vocabs...")
     
-    # Load the big float32 matrix (Pre-computed BERT vectors)
     if not os.path.exists(NEWS_MATRIX_PATH):
-        print(f"Error: {NEWS_MATRIX_PATH} not found. Did you run the global preprocess script?")
+        print(f"CRITICAL ERROR: {NEWS_MATRIX_PATH} not found.")
+        print("Did you run the global preprocessing script?")
         return
         
+    # Load the float32 matrix (Pre-computed Vectors)
     matrix_np = np.load(NEWS_MATRIX_PATH)
+    # Move to GPU immediately for fast lookup
     news_matrix = torch.tensor(matrix_np, dtype=torch.float32).to(device)
     
-    # Load ID mapping
+    # Load ID mapping (NewsID string -> Matrix Index int)
     with open(VOCAB_PATH, 'rb') as f:
         vocab = pickle.load(f)
         nid2idx = vocab['nid2idx']
 
     # 2. Load Model
     print(f"Loading Model from {MODEL_PATH}...")
-    model = BertBaselineModel(BERT_DIM, EMBED_DIM).to(device)
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-    model.eval()
+    try:
+        model = BertBaselineModel(BERT_DIM, EMBED_DIM).to(device)
+        model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+        model.eval()
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        print("Ensure 'model.py' defines the class 'BertBaselineModel' matching your saved weights.")
+        return
 
-    # 3. Read Test Data
-    print("Reading Test Behaviors...")
-    # Parsing strictly to avoid pandas errors
+    # 3. Read Test Behaviors
+    print(f"Reading {TEST_BEHAVIORS_PATH}...")
     behaviors = []
-    with open(TEST_BEHAVIORS, 'r') as f:
+    # Manual read to avoid pandas parsing errors with bad lines
+    with open(TEST_BEHAVIORS_PATH, 'r') as f:
         for line in f:
             parts = line.strip().split('\t')
             # Check format: id, uid, time, hist, imp
             if len(parts) < 5: continue
+            
+            # Handle potential header
+            if parts[0] == 'id': continue
+            
             behaviors.append({
                 'id': parts[0],
                 'hist': parts[3],
@@ -78,11 +92,11 @@ def main():
             impression_id = row['id']
             
             # --- Parse History ---
-            # Split history string and map to Integers
+            # Map NewsIDs to Indices
             hist_str = row['hist'].split()
             hist_ids = [nid2idx.get(x, 0) for x in hist_str]
             
-            # Take the last N clicks (must match training logic)
+            # Optimization: Take only the last N clicks (Same as training)
             hist_ids = hist_ids[-MAX_HISTORY:]
             
             # Pad if too short
@@ -90,44 +104,42 @@ def main():
                 hist_ids = [0] * (MAX_HISTORY - len(hist_ids)) + hist_ids
             
             # --- Parse Candidates ---
-            # format: "N1234 N5678" (test_behaviors usually doesn't have labels)
-            # If it has labels "N1234-0", split by '-'
+            # Candidates string: "N1234 N5678" (or "N1234-0" if labeled)
             imp_str = row['imp'].split()
             cand_nids = [x.split('-')[0] for x in imp_str]
             cand_ids = [nid2idx.get(x, 0) for x in cand_nids]
             
             if not cand_ids:
-                # Fallback for empty candidates (rare)
+                # Fallback for empty candidates (rare edge case)
                 res = {'id': impression_id}
                 for i in range(15): res[f'p{i+1}'] = 0.0
                 results.append(res)
                 continue
 
             # --- Batch Inference for 1 User ---
-            # We want to score: (User) vs (Cand1), (User) vs (Cand2)...
-            # So we repeat the User History vector for every candidate
-            
             num_cands = len(cand_ids)
             
             # Prepare Tensors on GPU
-            # History: [Num_Cands, MAX_HISTORY]
+            # 1. Replicate History for every candidate
+            # Shape: [Num_Cands, MAX_HISTORY]
             batch_hist = torch.tensor([hist_ids] * num_cands, dtype=torch.long, device=device)
-            # Candidate: [Num_Cands]
+            
+            # 2. Candidates
+            # Shape: [Num_Cands]
             batch_cand = torch.tensor(cand_ids, dtype=torch.long, device=device)
             
-            # LOOKUP VECTORS (The Fast Part)
-            # [Num_Cands, MAX_HISTORY, 768]
+            # 3. LOOKUP VECTORS (The Speedup!)
+            # Shape: [Num_Cands, MAX_HISTORY, 768]
             hist_vecs = news_matrix[batch_hist]
-            # [Num_Cands, 768]
+            # Shape: [Num_Cands, 768]
             cand_vecs = news_matrix[batch_cand]
             
-            # FORWARD PASS
+            # 4. FORWARD PASS
             logits = model(hist_vecs, cand_vecs)
             probs = torch.sigmoid(logits).cpu().numpy()
             
-            # --- Formatting ---
+            # --- Formatting for Kaggle ---
             res = {'id': impression_id}
-            # Fill p1...p15
             for i in range(15):
                 if i < num_cands:
                     res[f'p{i+1}'] = probs[i]
@@ -135,14 +147,16 @@ def main():
                     res[f'p{i+1}'] = 0.0 # Pad with 0 if fewer than 15 cands
             results.append(res)
 
-    # 5. Save
-    print(f"Writing submission to {SUBMISSION_PATH}...")
+    # 5. Save Output
+    print(f"Writing {len(results)} rows to {SUBMISSION_PATH}...")
     df = pd.DataFrame(results)
-    # Ensure correct column order
+    
+    # Ensure explicit column order
     cols = ['id'] + [f'p{i+1}' for i in range(15)]
     df = df[cols]
+    
     df.to_csv(SUBMISSION_PATH, index=False)
-    print("Done!")
+    print("Done! Upload 'submission.csv' to Kaggle.")
 
 if __name__ == "__main__":
     main()
