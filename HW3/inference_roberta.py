@@ -10,7 +10,7 @@ import sys
 # Check your model.py class name!
 # If using RoBERTa: from model import RobertaModel
 # If using BERT:    from model import BertBaselineModel 
-from model_roberta import RobertaBaselineModel 
+from model_roberta import HybridRobertaModel 
 
 BERT_DIM = 768          # Input size (Standard for BERT/RoBERTa base)
 EMBED_DIM = 256         # Internal model dimension (Must match training!)
