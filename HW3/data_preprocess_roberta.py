@@ -19,6 +19,25 @@ USER_DATA_PATH = os.path.join(PROCESSED_PATH, 'user_data.pkl')
 BATCH_SIZE = 128
 MODEL_NAME = 'roberta-base'
 
+def load_news_manual(file_path):
+    """
+    Robustly loads news ID and Title, ignoring bad lines/extra tabs in abstracts.
+    """
+    data = []
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in tqdm(f, desc=f"Reading {os.path.basename(file_path)}"):
+            line = line.strip()
+            if not line: continue
+            
+            parts = line.split('\t')
+            # We strictly need ID (0) and Title (3)
+            # 0=ID, 1=Cat, 2=Subcat, 3=Title
+            if len(parts) >= 4:
+                nid = parts[0]
+                title = parts[3]
+                data.append({'news_id': nid, 'title': title})
+    return pd.DataFrame(data)
+
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -26,14 +45,12 @@ def main():
     if not os.path.exists(PROCESSED_PATH):
         os.makedirs(PROCESSED_PATH)
 
-    # 1. Load AND Merge News
+    # 1. Load AND Merge News (Using Manual Loader)
     print("Reading News Files...")
-    cols = ['news_id', 'cat', 'subcat', 'title', 'abs', 'url', 'te', 'ae']
     
-    # Use manual parsing or strictly formatted read to avoid errors
-    # quoting=3 is often safer for these TSVs
-    df_train = pd.read_csv(TRAIN_NEWS, sep='\t', header=None, names=cols, quoting=3)
-    df_test = pd.read_csv(TEST_NEWS, sep='\t', header=None, names=cols, quoting=3)
+    # --- FIX: Use manual loader instead of read_csv ---
+    df_train = load_news_manual(TRAIN_NEWS)
+    df_test = load_news_manual(TEST_NEWS)
     
     # Concatenate and Drop Duplicates
     print("Merging News...")
@@ -88,6 +105,8 @@ def main():
 
     # 4. Process Training Behaviors (Using the GLOBAL Mapping)
     print("Reprocessing Training Behaviors (Indices changed)...")
+    
+    # We use pandas here because behaviors usually don't have dirty text columns
     behaviors = pd.read_csv(TRAIN_BEHAVIORS, sep='\t', header=None, 
                             names=['id','uid','time','hist','imp'], low_memory=False)
     
