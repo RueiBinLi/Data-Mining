@@ -6,7 +6,7 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import numpy as np
 import os
-from model import BaselineModel
+from model_MultiHeadAttention import BaselineModel
 
 # --- Configuration ---
 BATCH_SIZE = 512        # <--- INCREASED from 64. Critical for speed.
