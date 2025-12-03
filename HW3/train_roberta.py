@@ -18,8 +18,8 @@ EMBED_DIM = 256
 ROBERTA_DIM = 768  # Input size
 
 # Paths
-NEWS_MATRIX_PATH = 'processed/roberta_embeddings.npy' 
-USER_DATA_PATH = 'processed/user_data_train.pkl'
+NEWS_MATRIX_PATH = 'processed/news_roberta_embeddings.npy' 
+USER_DATA_PATH = 'processed/user_data.pkl'
 MODEL_SAVE_PATH = 'roberta_model.pt'
 
 class FastDataset(Dataset):
