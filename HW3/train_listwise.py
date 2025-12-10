@@ -5,7 +5,7 @@ from tqdm import tqdm
 import numpy as np
 import pickle
 import os
-from model_roberta import HybridRobertaModel 
+from model_roberta_best import HybridRobertaModel 
 
 # --- Config ---
 BATCH_SIZE = 128        # Smaller batch size because each sample is now 5x bigger (1+4 news)
