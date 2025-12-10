@@ -8,7 +8,7 @@ import sys
 
 # --- Import your Hybrid model ---
 # Ensure model_roberta.py contains the 'HybridRobertaModel' class
-from model_roberta import HybridRobertaModel 
+from model_roberta_best import HybridRobertaModel 
 
 # --- CONFIGURATION ---
 BERT_DIM = 768          # Input size (RoBERTa base)
