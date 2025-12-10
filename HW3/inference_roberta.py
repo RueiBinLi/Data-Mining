@@ -13,7 +13,7 @@ from model_roberta import HybridRobertaModel
 # --- CONFIGURATION ---
 BERT_DIM = 768          # Input size (RoBERTa base)
 EMBED_DIM = 256         # Internal model dimension
-MAX_HISTORY = 20        # Must match train.py (20)
+MAX_HISTORY = 50        # Must match train.py (20)
 
 # Paths
 TEST_BEHAVIORS_PATH = 'test/test_behaviors.tsv'
