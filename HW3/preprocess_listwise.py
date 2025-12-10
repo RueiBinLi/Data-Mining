@@ -24,7 +24,6 @@ def main():
         nid2idx = vocab['nid2idx']
 
     print("Reading Behaviors...")
-    # Manual read to avoid pandas memory issues
     samples = []
     
     with open(TRAIN_BEHAVIORS, 'r') as f:
@@ -48,8 +47,15 @@ def main():
             negatives = []
             
             for imp in impressions:
-                nid, label = imp.split('-')
+                # --- FIX: Safety Check for Malformed Data ---
+                split_imp = imp.split('-')
+                if len(split_imp) != 2:
+                    # Skip bad data (e.g. "N12345" without label)
+                    continue
+                
+                nid, label = split_imp
                 idx = nid2idx.get(nid, 0)
+                
                 if label == '1':
                     positives.append(idx)
                 else:
@@ -58,7 +64,7 @@ def main():
             # Create Training Samples (1 Pos + 4 Negs)
             for pos in positives:
                 if len(negatives) < NEG_RATIO:
-                    # If not enough negatives, reuse random ones
+                    # If not enough negatives, reuse random ones (or pad with 0)
                     negs = random.choices(negatives, k=NEG_RATIO) if negatives else [0]*NEG_RATIO
                 else:
                     negs = random.sample(negatives, NEG_RATIO)
